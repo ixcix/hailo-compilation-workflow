@@ -1,0 +1,47 @@
+# --- Directorios de Datos e Inferencia (Ignorar contenido) ---
+checkpoints/*
+!checkpoints/.gitkeep
+
+data/*
+!data/.gitkeep
+
+inference_output/*
+!inference_output/.gitkeep
+
+output/*
+!output/.gitkeep
+
+model/*
+!model/.gitkeep
+
+logs/*
+!logs/.gitkeep
+
+# --- Modelos y Pesos (Cualquier ubicación) ---
+*.pth
+*.pt
+*.ckpt
+*.h5
+*.onnx
+*.tflite
+*.har
+*.hef
+*.summary
+
+# --- Binarios y Compilación ---
+*.so
+*.a
+*.o
+build/
+dist/
+*.egg-info/
+
+# --- Python y Sistema ---
+__pycache__/
+*/__pycache__/
+*.pyc
+.env
+.DS_Store
+.vscode/
+.idea/
+.ipynb_checkpoints/
