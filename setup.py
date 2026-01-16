@@ -25,14 +25,14 @@ def write_version_to_file(version, target_file):
         print('__version__ = "%s"' % version, file=f)
 
 if __name__ == '__main__':
-    version = '0.6.0+%s' % get_git_commit_number()
+    # version = '0.6.0+%s' % get_git_commit_number()
     
-    # MODIFICACIÓN: Ruta correcta al archivo de versión dentro de src
-    write_version_to_file(version, 'src/pcdet/version.py')
+    # # MODIFICACIÓN: Ruta correcta al archivo de versión dentro de src
+    # write_version_to_file(version, 'src/pcdet/version.py')
 
     setup(
         name='pcdet',
-        version=version,
+        version='0.6.0+0000000',
         description='OpenPCDet is a general codebase for 3D object detection from point cloud',
         install_requires=[
             'numpy',

@@ -8,7 +8,6 @@ import os
 import argparse
 
 # --- 1. Configuración de Entorno y Logs  ---
-# Definimos rutas absolutas para evitar ambigüedad
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 logs_dir = os.path.join(project_root, "logs")
 os.makedirs(logs_dir, exist_ok=True)
@@ -24,8 +23,8 @@ from hailo_sdk_client import ClientRunner
 BASIC_CONFIG = {
     "input_model_dir": "../model/",
     "output_har_dir": "../model/",   # El HAR se suele guardar junto al modelo o en intermediate/
-    "hw_arch": "hailo8l",            # hailo8, hailo8l etc.
-    "model_name": "dkf_lstm_stateless"         # Nombre modelo pp_bev_w_head_simp, dkf_lstm
+    "hw_arch": "hailo8",            # hailo8, hailo8l etc.
+    "model_name": "dkf_lstm_minimal_states_1"         # Nombre modelo pp_bev_w_head_simp, dkf_lstm
 }
 
 def parse_model(model_path, output_har_path, hw_arch, start_nodes=None, end_nodes=None):
@@ -79,13 +78,20 @@ if __name__ == "__main__":
     parser.add_argument("--start-nodes", nargs="+", default=None, help="Nombres de los nodos de inicio (opcional)")
     parser.add_argument("--end-nodes", nargs="+", default=None, help="Nombres de los nodos finales (opcional, para cortar post-procesados)")
     args = parser.parse_args()
-
+    
     # Definir ruta de salida automática si no se provee
     if args.output is None:
         model_filename = os.path.basename(args.model)
         model_name_no_ext = os.path.splitext(model_filename)[0]
-        args.output = os.path.join(BASIC_CONFIG["output_har_dir"], f"{model_name_no_ext}.har")
 
+        # Quitar sufijo "_simplified" si existe
+        if model_name_no_ext.endswith("_simplified"):
+            model_name_no_ext = model_name_no_ext.replace("_simplified", "")
+
+        args.output = os.path.join(
+            BASIC_CONFIG["output_har_dir"],
+            f"{model_name_no_ext}.har"
+        )
     # Crear directorios necesarios
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
 

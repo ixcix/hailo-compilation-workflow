@@ -7,9 +7,9 @@ import numpy as np
 from pathlib import Path
 
 # Replace with your OpenPCDet clone directory
-openpcdet_clonedir = '/local/shared_with_docker/PointPillars/src/OpenPCDet'
-# sys.path.append(openpcdet_clonedir)
-sys.path.append(openpcdet_clonedir + '/tools/')
+# openpcdet_clonedir = '/local/shared_with_docker/PointPillars/src/OpenPCDet'
+# # sys.path.append(openpcdet_clonedir)
+# sys.path.append(openpcdet_clonedir + '/tools/')
 
 src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src'))
 sys.path.append(src_path)
@@ -35,19 +35,25 @@ import openpcdet2hailo_utils as ohu;
 import open3d_vis_utils as V
 
 ################################# PATHS and config #################################
-model = 'centerpoint-pillar'
-dataset = 'kitti' #kitti, waymo or innovizone
+model = 'pointpillars' #pointpillars, centerpoint-pillar
+dataset = 'kitti' #kitti, waymo or nuscenes
 print(f'MODEL: {model}, DATASET: {dataset}')
 
 # Paths to model configuration and weights
-yaml_name = f'/local/shared_with_docker/PointPillars/cfgs/{model}_{dataset}.yaml'
-pth_name = f'/local/shared_with_docker/PointPillars/model/{model}_{dataset}.pth'
+yaml_name = f'/local/shared_with_docker/hailo-compilation-workflow/cfgs/{model}_{dataset}.yaml'
+pth_name = f'/local/shared_with_docker/hailo-compilation-workflow/checkpoints/{model}_{dataset}.pth'
 
 # Path to point cloud data custom
-sample_pointclouds = f'/local/shared_with_docker/PointPillars/data/{dataset}/training/velodyne'
-demo_pointcloud = f'/local/shared_with_docker/PointPillars/data/{dataset}/training/velodyne/'
-# sample_pointclouds = f'/local/shared_with_docker/PointPillars/data/mis_nubes'
-# demo_pointcloud = f'/local/shared_with_docker/PointPillars/data/mis_nubes/'
+# #nuscenes or waymo
+# sample_pointclouds = f'/local/shared_with_docker/hailo-compilation-workflow/data/{dataset}'
+# demo_pointcloud = f'/local/shared_with_docker/hailo-compilation-workflow/data/{dataset}'
+
+#kitti
+sample_pointclouds = f'/local/shared_with_docker/hailo-compilation-workflow/data/{dataset}/training/velodyne'
+demo_pointcloud = f'/local/shared_with_docker/hailo-compilation-workflow/data/{dataset}/training/velodyne/'
+
+# sample_pointclouds = f'/local/shared_with_docker/hailo-compilation-workflow/data/mis_nubes'
+# demo_pointcloud = f'/local/shared_with_docker/hailo-compilation-workflow/data/mis_nubes/'
 
 # File extension of point cloud files
 if dataset == 'kitti':
@@ -57,17 +63,17 @@ else:
 
 
 # Path to output dir for the onnx file
-output_path = f'/local/shared_with_docker/PointPillars/output/{model}/{dataset}'
+output_path = f'/local/shared_with_docker/hailo-compilation-workflow/output/{model}/{dataset}'
 
 # Hardware architecture
 hw_arch='hailo8'
 
-onnx_name = f'{output_path}/pp_bev_w_head.onnx'
-onnx_name_simp = f'{output_path}/pp_bev_w_head_simp.onnx'
-har_name = f'{output_path}/pp_bev_w_head.har'
+onnx_name = f'{output_path}/{model}_{dataset}.onnx'
+onnx_name_simp = f'{output_path}/{model}_{dataset}_simp.onnx'
+har_name = f'{output_path}/{model}_{dataset}.har'
 
 # Directory where logs should be saved
-log_dir = '/local/shared_with_docker/PointPillars/logs'
+log_dir = '/local/shared_with_docker/hailo-compilation-workflow/logs'
 os.makedirs(log_dir, exist_ok=True)  # Create the directory if it doesn't exist
 log_file = os.path.join(log_dir, 'pp_to_har.log')
 logger = common_utils.create_logger(log_file)
@@ -106,14 +112,14 @@ def get_model(cfg, pth_name, demo_dataset):
     model.eval()
     return model
 
-def cfg_from_yaml_file_wrap(yaml_name, cfg):
-    cwd = os.getcwd()
-    os.chdir(openpcdet_clonedir+'/tools/')
-    cfg_from_yaml_file(yaml_name, cfg)
-    os.chdir(cwd)
+# def cfg_from_yaml_file_wrap(yaml_name, cfg):
+#     cwd = os.getcwd()
+#     os.chdir(openpcdet_clonedir+'/tools/')
+#     cfg_from_yaml_file(yaml_name, cfg)
+#     os.chdir(cwd)
 
 
-cfg_from_yaml_file_wrap(yaml_name, cfg)
+cfg_from_yaml_file(yaml_name, cfg)
 
 logger.info('----------------------------- OPENPCDET -----------------------------')
 demo_dataset = ohu.DemoDataset(

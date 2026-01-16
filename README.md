@@ -54,8 +54,11 @@ hailo-compilation-workflow
 ```
 
 
-Si se va a usar algun modelo de OpenPCDet es necesario el paquete pcdet: pip install -v -e . --no-build-isolation
-
+Si se va a usar algun modelo de OpenPCDet es necesario el paquete pcdet: 
+``` bash
+pip install -v -e . --no-build-isolation
+pip install spconv-cu120	
+```
 
 ## COMPILATION WORKFLOW
 

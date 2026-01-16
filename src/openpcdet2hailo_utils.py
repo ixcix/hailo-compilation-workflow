@@ -21,10 +21,10 @@ class Bev_w_Head(torch.nn.Module):
     """ Same as backbone_2d + head, but accepting spatial_features directly.
          Wraps the original module which it accepts in constructor, code is copied from orig forward().
     """
-    def __init__(self, bb2d, dense):
+    def __init__(self, bb2d, head):
         super().__init__()
         self._bb2d=bb2d  # the model.backbone_2d
-        self.dense=dense
+        self.head=head    # the model.dense_head
         
     def forward(self, spatial_features):
         #2D backbone forward:
@@ -52,22 +52,44 @@ class Bev_w_Head(torch.nn.Module):
         
         spatial_features_2d = x
         
+        # DENSE HEAD FORWARD:
 
-        #pointpillars 2D dense head forward (AnchorHeadSingle forward code):
+        # (AnchorHeadSingle forward code) pointpillars_kitti:
         # cls_preds = self.dense.conv_cls(spatial_features_2d)
         # box_preds = self.dense.conv_box(spatial_features_2d)
         # dir_cls_preds = self.dense.conv_dir_cls(spatial_features_2d)
-        
+        # return (spatial_features_2d, cls_preds, box_preds, dir_cls_preds)
 
-        #centerpoint-pillar dense head forward (CenterHead forward code):
-        x = self.dense.shared_conv(spatial_features_2d)
+        # #centerpoint-pillar dense head forward (CenterHead forward code):
+        # x = self.dense.shared_conv(spatial_features_2d)
+        # pred_dicts = []
+        # for head in self.dense.heads_list:
+        #     pred_dicts.append(head(x))
+        # return pred_dicts
 
-        pred_dicts = []
-        for head in self.dense.heads_list:
-            pred_dicts.append(head(x))
+        # ---------- AnchorHeadMulti (solo CNN) ----------
+        if self.head.shared_conv is not None:
+            spatial_features_2d = self.head.shared_conv(spatial_features_2d)
 
-        #return (spatial_features_2d, cls_preds, box_preds, dir_cls_preds)
-        return pred_dicts
+        outputs = []
+        for rpn_head in self.head.rpn_heads:
+            cls = rpn_head.conv_cls(spatial_features_2d)
+
+            if rpn_head.separate_reg_config is None:
+                box = rpn_head.conv_box(spatial_features_2d)
+            else:
+                box_list = []
+                for name in rpn_head.conv_box_names:
+                    box_list.append(rpn_head.conv_box[name](spatial_features_2d))
+                box = torch.cat(box_list, dim=1)
+
+            if rpn_head.conv_dir_cls is not None:
+                dir_cls = rpn_head.conv_dir_cls(spatial_features_2d)
+                outputs.append((cls, box, dir_cls))
+            else:
+                outputs.append((cls, box))
+
+        return outputs
 
 
 class Post_Bev_w_Head(torch.nn.Module):

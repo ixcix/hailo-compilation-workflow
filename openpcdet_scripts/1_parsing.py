@@ -7,9 +7,9 @@ import numpy as np
 from pathlib import Path
 
 # Replace with your OpenPCDet clone directory
-openpcdet_clonedir = '/local/shared_with_docker/PointPillars/src/OpenPCDet'
-# sys.path.append(openpcdet_clonedir)
-sys.path.append(openpcdet_clonedir + '/tools/')
+# openpcdet_clonedir = '/local/shared_with_docker/PointPillars/src/OpenPCDet'
+# # sys.path.append(openpcdet_clonedir)
+# sys.path.append(openpcdet_clonedir + '/tools/')
 
 src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src'))
 sys.path.append(src_path)
@@ -23,6 +23,7 @@ import onnx
 
 
 from hailo_sdk_client import ClientRunner
+from hailo_sdk_client import InferenceContext 
 import hailo_sdk_client
 print(hailo_sdk_client.__version__)
 
@@ -47,8 +48,8 @@ log_file = os.path.join(log_dir, '0_openpcdet_model.log')
 logger = common_utils.create_logger(log_file)
 
 ################################# PATHS and config #################################
-model = 'centerpoint-pillar' #pointpillars, centerpoint-pillar
-dataset = 'kitti' #kitti, waymo 
+model = 'pointpillars' #pointpillars, centerpoint-pillar
+dataset = 'nuscenes' #kitti, waymo, nuscenes 
 logger.info(f'MODEL: {model}, DATASET: {dataset}')
 
 # Paths to model configuration and weights
@@ -79,15 +80,30 @@ har_name = os.path.join(output_dir, f'{model}_{dataset}.har')
 
 
 
-end_node_names = ['model/concat1', 'model/conv19', 'model/conv18', 'model/conv20']
-
+#end_node_names = ['model/concat1', 'model/conv19', 'model/conv18', 'model/conv20']
+# end_node_names=[
+#         "/rpn_heads.0/Transpose",
+#         "/rpn_heads.0/Transpose_1",
+#         "/rpn_heads.1/Transpose",
+#         "/rpn_heads.1/Transpose_1",
+#         "/rpn_heads.2/Transpose",
+#         "/rpn_heads.2/Transpose_1",
+#         "/rpn_heads.3/Transpose",
+#         "/rpn_heads.3/Transpose_1",
+#         "/rpn_heads.4/Transpose",
+#         "/rpn_heads.4/Transpose_1",
+#         "/rpn_heads.5/Transpose",
+#         "/rpn_heads.5/Transpose_1",
+#     ]
 
 # Cargar el modelo ONNX simplificado
 model = onnx.load(onnx_name_simp)
 
 runner = ClientRunner(hw_arch=hw_arch)
 
-hn, npz = runner.translate_onnx_model(onnx_name_simp, end_node_names = end_node_names)
+# hn, npz = runner.translate_onnx_model(onnx_name_simp, end_node_names = end_node_names)
+hn, npz = runner.translate_onnx_model(onnx_name_simp)
+
 
 #print(f'hn: {hn}')
 

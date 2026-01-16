@@ -13,23 +13,32 @@ import onnx
 from onnxsim import simplify
 
 
+# # --- Import Setup ---
+# current_dir = os.path.dirname(os.path.abspath(__file__))
+# project_root = os.path.abspath(os.path.join(current_dir, '..'))
+# src_path = os.path.join(project_root, 'src')
+# sys.path.append(src_path)
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, '..'))
+src_path = os.path.join(project_root, 'src')
+sys.path.insert(0, src_path) 
+
 # Import OpenPCDet modules
 from pcdet.config import cfg, cfg_from_yaml_file
 from pcdet.utils import common_utils
 from pcdet.models import build_network, load_data_to_gpu
+import pcdet.datasets as datasets
+
 
 import openpcdet2hailo_utils as ohu
-import dataset_utils as du
+# import dataset_utils as du
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="spconv")
 warnings.filterwarnings("ignore", category=FutureWarning, module="pcdet")
 warnings.filterwarnings("ignore", category=UserWarning, module="torch")
 
-# --- Import Setup ---
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.abspath(os.path.join(current_dir, '..'))
-src_path = os.path.join(project_root, 'src')
-sys.path.append(src_path)
+
 
 
 
@@ -43,8 +52,8 @@ logger = common_utils.create_logger(log_file)
 ################################# PATHS and Config #################################
 
 # Configuration: Choose model and dataset
-model = 'centerpoint-pillar' # Options: pointpillars, centerpoint-pillar
-dataset = 'kitti'      # Options: kitti
+model = 'pointpillars' # Options: pointpillars, centerpoint-pillar
+dataset = 'nuscenes'      # Options: kitti, waymo, nuscenes
 logger.info(f'MODEL: {model}, DATASET: {dataset}')
 
 # Paths to model configuration and weights
@@ -80,12 +89,20 @@ cfg_from_yaml_file(cfg_file, cfg)
 
 logger.info(f'-------- Loading Dataset (Demo) --------')
 # Create a demo dataset to verify data loading pipeline
-demo_dataset = du.DemoDataset(
+# demo_dataset = du.DemoDataset(
+#     dataset_cfg=cfg.DATA_CONFIG,
+#     class_names=cfg.CLASS_NAMES,
+#     training=False,
+#     root_path=Path(pointclouds_dir),
+#     ext=pc_file_extension,
+#     logger=logger
+# )
+demo_dataset = datasets.NuScenesDataset(
     dataset_cfg=cfg.DATA_CONFIG,
     class_names=cfg.CLASS_NAMES,
     training=False,
     root_path=Path(pointclouds_dir),
-    ext=pc_file_extension,
+    # ext=pc_file_extension,
     logger=logger
 )
 logger.info(f'Total number of samples: \t{len(demo_dataset)}')
@@ -176,7 +193,22 @@ with torch.no_grad():
 #print(bev_out.keys())
 #print(bev_out)
 
-end_node_names = ['model/concat1', 'model/conv19', 'model/conv18', 'model/conv20']
+# end_node_names = ['model/concat1', 'model/conv19', 'model/conv18', 'model/conv20']
+# end_node_names=[
+#         "/rpn_heads.0/Transpose",
+#         "/rpn_heads.0/Transpose_1",
+#         "/rpn_heads.1/Transpose",
+#         "/rpn_heads.1/Transpose_1",
+#         "/rpn_heads.2/Transpose",
+#         "/rpn_heads.2/Transpose_1",
+#         "/rpn_heads.3/Transpose",
+#         "/rpn_heads.3/Transpose_1",
+#         "/rpn_heads.4/Transpose",
+#         "/rpn_heads.4/Transpose_1",
+#         "/rpn_heads.5/Transpose",
+#         "/rpn_heads.5/Transpose_1",
+#     ]
+print(f'Exporting ONNX model to {onnx_name} ...')
 
 torch.onnx.export(
     bev_w_head,
@@ -184,8 +216,8 @@ torch.onnx.export(
     f=onnx_name,
     verbose=False,
     opset_version=13,
-    input_names=['spatial_features'],
-    output_names= end_node_names
+    input_names=['spatial_features']
+    #output_names=end_node_names
 )
 
 #exit()
