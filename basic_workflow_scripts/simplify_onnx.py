@@ -1,9 +1,9 @@
 import onnx
 from onnxsim import simplify
 
-
-onnx_name = "/local/shared_with_docker/hailo-compilation-workflow/model/pillarnest_tiny_hailo.onnx"
-onnx_name_simp = "/local/shared_with_docker/hailo-compilation-workflow/model/pillarnest_tiny_hailo_simplified.onnx"
+name = ""
+onnx_name = f"../model/{name}.onnx"
+onnx_name_simp = f"../model/{name}_simp.onnx"
 
 model = onnx.load(onnx_name)
 
