@@ -6,73 +6,75 @@ import numpy as np
 from tqdm import tqdm
 import time
 import psutil
-import csv # <--- AÑADIDO: Librería para exportar a CSV
-# Importamos esto por si quieres habilitar algún dibujo puntual, pero lo dejaremos apagado
+import csv
 import matplotlib
-# Forzamos el backend 'Agg' (sin interfaz gráfica) ANTES de importar pyplot
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
 from hailo_platform import VDevice, HEF, FormatType, HailoSchedulingAlgorithm
 
+# Asegúrate de que esta ruta apunte a donde tienes tus scripts de PointPillars
 sys.path.append("/local/shared_with_docker/hailo-compilation-workflow")
-from pillarnest_scripts.pillarnest_logic_pre import (
+from pointpillars_scripts.pointpillars_logic_pre import (
     Loader, MultiSweep, Voxelizer, 
-    PillarnestHeightEncoder, Scatter
+    PointpillarsHardVFE, Scatter
 )
-from pillarnest_scripts.pillarnest_logic_post import CenterPointPostProcessor
-from pillarnest_scripts.pillarnest_config import PillarnestTinyConfig as Cfg
+from pointpillars_scripts.pointpillars_logic_post import PointPillarsPostProcessor
+import pointpillars_scripts.pointpillars_config as cfg
 
 # ==========================================
 # CONFIGURACIÓN
 # ==========================================
 PKL_INFOS = "/local/shared_with_docker/hailo-compilation-workflow/data/nuscenes/v1.0-trainval/nuscenes_infos_val.pkl"
 DATA_ROOT = "/local/shared_with_docker/hailo-compilation-workflow/data/nuscenes/v1.0-trainval"
-WEIGHTS_NUMPY = "model/hailo8l/pillarnest_tiny/pillarnest_tiny_encoder_weights.npy"
-MODEL_PATH = "model/hailo8l/pillarnest_tiny/pillarnest_tiny_original_opt0_base.hef"
+WEIGHTS_NUMPY = "model/hailo8l/pointpillars/pointpillars_vfe_weights.npy" 
+MODEL_PATH = "model/hailo8l/pointpillars/pointpillars_opt0_base.hef"
 
 # PONER A None PARA EL DATASET COMPLETO
-LIMIT_FRAMES = None
-SAVE_VISUALS = False # Apagado para ir a máxima velocidad
+LIMIT_FRAMES = 5
+SAVE_VISUALS = True 
 
-output_path = "debug_hw_official"
+output_path = "inference_output"
 output_path_images = os.path.join(output_path, "images")
 os.makedirs(output_path_images, exist_ok=True)
 
-class PillarnestHailoEvaluator:
+# Usamos la configuración de PointPillars
+Cfg = cfg.PointPillarsConfig
+
+class PointPillarsHailoEvaluator:
     def __init__(self, model_path, weights_path):
-        print(f"✅ Inicializando Evaluador y Sensores...")
+        print(f"✅ Inicializando Evaluador PointPillars (Hailo-8L)...")
         params = VDevice.create_params()
         params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
         self.vdevice_params = params
         self.model_path = model_path
         
+        # Módulos Pre-procesado PointPillars
         self.loader = Loader(load_dim=5)
         self.sweeper = MultiSweep(sweeps_num=Cfg.sweeps_num, remove_close=True, test_mode=True)
-        self.voxelizer = Voxelizer(Cfg.voxel_size, Cfg.point_cloud_range, Cfg.max_num_points, Cfg.max_voxels[1])
-        self.encoder = PillarnestHeightEncoder(Cfg.voxel_size, Cfg.point_cloud_range, [Cfg.feat_channels])
+        self.voxelizer = Voxelizer(Cfg.voxel_size, Cfg.point_cloud_range, Cfg.max_num_points, Cfg.max_voxels)
+        
+        # Encoder específico de PointPillars
+        self.encoder = PointpillarsHardVFE(Cfg.voxel_size, Cfg.point_cloud_range)
         self.encoder.set_weights(np.load(weights_path, allow_pickle=True).item())
-        self.scatter = Scatter(output_shape=Cfg.grid_size[:2], num_input_features=48)
-        self.post_processor = CenterPointPostProcessor(Cfg)
+        
+        self.scatter = Scatter(output_shape=Cfg.output_shape, num_input_features=Cfg.in_channels_scatter)
+        
+        # Post-procesador que acabamos de validar
+        self.post_processor = PointPillarsPostProcessor(Cfg)
 
-        # Diccionario de telemetría ampliado
         self.stats = {
-            't_pre': [],
-            't_infer': [],
-            't_post': [],
-            't_total': [],
-            'cpu_util': [],
-            'npu_util': [],
-            'hailo_temp': [] # <--- NUEVA MÉTRICA: Temperatura
+            't_pre': [], 't_infer': [], 't_post': [], 't_total': [],
+            'cpu_util': [], 'npu_util': [], 'hailo_temp': []
         }
 
-    def run(self, val_infos, limit=None, csv_filename="hw_metrics.csv"):
+    def run(self, val_infos, limit=None, csv_filename="hw_metrics_pointpillars.csv"):
         results_list = []
         if limit is not None:
             val_infos = val_infos[:limit]
         
-        psutil.cpu_percent() # Init CPU monitor
+        psutil.cpu_percent()
 
         with VDevice(self.vdevice_params) as vdevice:
             self.hef = HEF(self.model_path)
@@ -81,7 +83,6 @@ class PillarnestHailoEvaluator:
             for output in infer_model.outputs:
                 output.set_format_type(FormatType.FLOAT32)
 
-            # Extraemos el control_object para medir temperatura
             try:
                 phys_devs = vdevice.get_physical_devices()
                 hailo_control = phys_devs[0].control if len(phys_devs) > 0 else None
@@ -95,11 +96,10 @@ class PillarnestHailoEvaluator:
                 for name, buffer in output_buffers.items():
                     bindings.output(name).set_buffer(buffer)
 
-                for idx, info in enumerate(tqdm(val_infos, desc="Full Inference")):
-                    
+                for idx, info in enumerate(tqdm(val_infos, desc="PointPillars Inference")):
                     t_frame_start = time.perf_counter()
 
-                    # 1. PRE-PROCESADO
+                    # 1. PRE-PROCESADO (Modular PointPillars)
                     t_pre_start = time.perf_counter()
                     frame_info = copy.deepcopy(info)
                     lidar_f = self._fix_path(frame_info['lidar_path'])
@@ -112,138 +112,85 @@ class PillarnestHailoEvaluator:
                     canvas = self.scatter.scatter(feat, c)
                     self.stats['t_pre'].append(time.perf_counter() - t_pre_start)
 
-                    # 2. INFERENCIA
+                    # 2. INFERENCIA NPU
                     t_infer_start = time.perf_counter()
+                    # Canvas NHWC directo a la NPU
                     bindings.input().set_buffer(np.ascontiguousarray(canvas, dtype=np.float32))
                     configured_model.run([bindings], 10000)
                     self.stats['t_infer'].append(time.perf_counter() - t_infer_start)
 
-                    # 3 & 4. POST-PROCESADO
+                    # 3. POST-PROCESADO (Mapeo de 3 Salidas)
                     t_post_start = time.perf_counter()
                     logical_output_map = {}
                     for vstream_name, buffer in output_buffers.items():
                         temp_4d = buffer if buffer.ndim == 4 else buffer[None, ...]
+                        # Hailo entrega NHWC, pasamos a NCHW para el post-processor
                         nchw_data = np.ascontiguousarray(temp_4d.transpose(0, 3, 1, 2))
                         orig_names = self.hef.get_original_names_from_vstream_name(vstream_name)
                         for name in orig_names: logical_output_map[name] = nchw_data
 
-                    headers = ['reg', 'height', 'dim', 'rot', 'vel', 'iou', 'heatmap']
+                    # Recolectamos las 3 cabezas específicas de PointPillars
+                    # El orden debe ser: cls, bbox, dir
+                    head_keys = ['cls_score', 'bbox_pred', 'dir_cls_pred']
                     raw_res = []
-                    for task_id in range(len(self.post_processor.tasks)):
-                        for h in headers:
-                            target_key = f"task{task_id}_{h}"
-                            match = [v for k, v in logical_output_map.items() if target_key in k]
-                            if match: raw_res.append(match[0])
-                            else:
-                                c = 2 if h in ['reg', 'rot', 'vel'] else 3 if h == 'dim' else 1
-                                raw_res.append(np.zeros((1, c, 180, 180), dtype=np.float32))
+                    for h_key in head_keys:
+                        # Buscamos el buffer que contenga el nombre de la cabeza
+                        match = [v for k, v in logical_output_map.items() if h_key in k]
+                        if match:
+                            raw_res.append(match[0])
+                        else:
+                            print(f"⚠️ Error: No se encontró la salida {h_key} en el HEF")
+                            # Fallback: tensor vacío con dimensiones NuScenes (200x200 o 400x400)
+                            raw_res.append(np.zeros((1, 1, canvas.shape[0]//2, canvas.shape[1]//2)))
 
                     preds = self.post_processor.forward(raw_res)
                     self.stats['t_post'].append(time.perf_counter() - t_post_start)
 
-                    # 5. TELEMETRÍA GLOBAL DEL FRAME
+                    # 4. TELEMETRÍA
                     self.stats['t_total'].append(time.perf_counter() - t_frame_start)
                     self.stats['cpu_util'].append(psutil.cpu_percent())
                     
-                    # Temperatura (CÓDIGO NUEVO Y SEGURO)
                     if hailo_control:
                         try:
                             temp_obj = hailo_control.get_chip_temperature()
-                            # El objeto TemperatureInfo en la API de Hailo suele tener dos sensores (ts0 y ts1)
-                            if hasattr(temp_obj, 'ts0_temperature'):
-                                self.stats['hailo_temp'].append(temp_obj.ts0_temperature)
-                            elif hasattr(temp_obj, 'temperature'):
-                                self.stats['hailo_temp'].append(temp_obj.temperature)
-                            else:
-                                # Fallback de emergencia por si cambian el nombre del atributo en esta versión:
-                                # Extraemos el primer número decimal que aparezca en la representación en texto del objeto
-                                import re
-                                nums = re.findall(r"[-+]?\d*\.\d+|\d+", str(temp_obj))
-                                if nums:
-                                    self.stats['hailo_temp'].append(float(nums[0]))
-                        except Exception:
-                            pass
+                            self.stats['hailo_temp'].append(getattr(temp_obj, 'ts0_temperature', getattr(temp_obj, 'temperature', 0)))
+                        except Exception: pass
 
-                    # NPU Utilization (Fallback si existe en esta versión)
-                    try:
-                        hw_stats = vdevice.get_statistics()
-                        if hasattr(hw_stats, 'device_utilization'):
-                            self.stats['npu_util'].append(hw_stats.device_utilization)
-                    except Exception:
-                        pass 
-
-                    # FORMATEAR
+                    # FORMATEAR RESULTADOS
                     results_list.append({
                         'token': info['token'],
                         'boxes_3d': self._format_boxes(preds),
                         'scores_3d': np.array([p['score'] for p in preds]),
                         'labels_3d': self._format_labels(preds)
                     })
-
                     if SAVE_VISUALS and idx % 1 == 0:
                         self._draw_and_save(idx, pts_m, preds)
+
 
         self._print_and_save_hardware_report(csv_filename)
         return results_list
 
     def _print_and_save_hardware_report(self, csv_filename):
+        # Mantenemos tu lógica de reporte idéntica para comparar con Pillarnest
         print("\n" + "="*65)
-        print("📊 REPORTE DE RENDIMIENTO DE HARDWARE (PAPER)")
+        print("📊 REPORTE HARDWARE: POINTPILLARS EN HAILO-8L")
         print("="*65)
+        t_pre = np.mean(self.stats['t_pre']) * 1000
+        t_inf = np.mean(self.stats['t_infer']) * 1000
+        t_pos = np.mean(self.stats['t_post']) * 1000
+        t_tot = np.mean(self.stats['t_total']) * 1000
         
-        t_pre_ms = np.mean(self.stats['t_pre']) * 1000
-        t_infer_ms = np.mean(self.stats['t_infer']) * 1000
-        t_post_ms = np.mean(self.stats['t_post']) * 1000
-        t_total_ms = np.mean(self.stats['t_total']) * 1000
+        print(f"⏱️  Latencia Pre:   {t_pre:.2f} ms")
+        print(f"⏱️  Latencia NPU:   {t_inf:.2f} ms")
+        print(f"⏱️  Latencia Post:  {t_pos:.2f} ms")
+        print(f"⏱️  Latencia Total: {t_tot:.2f} ms")
+        print(f"🚀 FPS E2E:        {1000.0/t_tot:.2f}")
+        print(f"🌡️  Temp Media:     {np.mean(self.stats['hailo_temp']):.2f} °C")
         
-        fps_npu = 1000.0 / t_infer_ms if t_infer_ms > 0 else 0
-        fps_e2e = 1000.0 / t_total_ms if t_total_ms > 0 else 0
-        cpu_avg = np.mean(self.stats['cpu_util'])
-        
-        temp_avg = np.mean(self.stats['hailo_temp']) if self.stats['hailo_temp'] else "N/A"
-        npu_avg = np.mean(self.stats['npu_util']) if self.stats['npu_util'] else "N/A"
-
-        print(f"⏱️  LATENCY BREAKDOWN (promedio por frame):")
-        print(f"  - Pre-processing (CPU):   {t_pre_ms:.2f} ms")
-        print(f"  - NPU Inference (Hailo):  {t_infer_ms:.2f} ms")
-        print(f"  - Post-processing (CPU):  {t_post_ms:.2f} ms")
-        print(f"  - End-to-End Latency:     {t_total_ms:.2f} ms")
-        
-        print(f"\n🚀 THROUGHPUT:")
-        print(f"  - Hardware NPU Throughput: {fps_npu:.2f} FPS")
-        print(f"  - Effective System Throughput: {fps_e2e:.2f} FPS")
-        
-        print(f"\n💻 RESOURCE UTILIZATION & THERMALS:")
-        print(f"  - CPU Utilization: {cpu_avg:.2f} %")
-        print(f"  - NPU Utilization: {npu_avg if isinstance(npu_avg, str) else f'{npu_avg:.2f} %'}")
-        print(f"  - Chip Temperature: {temp_avg if isinstance(temp_avg, str) else f'{temp_avg:.2f} °C'}")
-        print("="*65 + "\n")
-
-        with open(csv_filename, mode='w', newline='', encoding='utf-8') as f:
+        with open(csv_filename, mode='w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([
-                "Pre-processing Latency (ms)", 
-                "NPU Inference Latency (ms)", 
-                "Post-processing Latency (ms)", 
-                "End-to-End Latency (ms)", 
-                "Hardware NPU Throughput (FPS)", 
-                "Effective System Throughput (FPS)", 
-                "CPU Utilization (%)", 
-                "NPU Utilization (%)",
-                "Chip Temperature (C)"
-            ])
-            writer.writerow([
-                f"{t_pre_ms:.2f}",
-                f"{t_infer_ms:.2f}",
-                f"{t_post_ms:.2f}",
-                f"{t_total_ms:.2f}",
-                f"{fps_npu:.2f}",
-                f"{fps_e2e:.2f}",
-                f"{cpu_avg:.2f}",
-                f"{npu_avg:.2f}" if isinstance(npu_avg, float) else npu_avg,
-                f"{temp_avg:.2f}" if isinstance(temp_avg, float) else temp_avg
-            ])
-        print(f"📁 Métricas de hardware exportadas en: {csv_filename}\n")
+            writer.writerow(["Pre_ms", "NPU_ms", "Post_ms", "Total_ms", "FPS", "CPU_%", "Temp_C"])
+            writer.writerow([t_pre, t_inf, t_pos, t_tot, 1000/t_tot, np.mean(self.stats['cpu_util']), np.mean(self.stats['hailo_temp'])])
 
     def _format_boxes(self, preds):
         if not preds: return np.zeros((0, 9))
@@ -251,7 +198,8 @@ class PillarnestHailoEvaluator:
         for p in preds:
             b = p['box']
             v = p['velocity']
-            boxes.append([b['x'], b['y'], b['z'], b['l'], b['w'], b['h'], b['rot'], v[0], v[1]])
+            # Formato NuScenes: [x, y, z, w, l, h, rot, vx, vy]
+            boxes.append([b['x'], b['y'], b['z'], b['w'], b['l'], b['h'], b['rot'], v[0], v[1]])
         return np.array(boxes)
 
     def _format_labels(self, preds):
@@ -262,7 +210,7 @@ class PillarnestHailoEvaluator:
         p = path.replace('\\', '/')
         f = 'samples' if 'samples' in p else 'sweeps' if 'sweeps' in p else ''
         return os.path.join(DATA_ROOT, f, p.split(f + '/')[-1]) if f else os.path.join(DATA_ROOT, os.path.basename(p))
-    
+
     def _draw_and_save(self, idx, points, boxes):
         fig, ax = plt.subplots(1, 1, figsize=(10, 10), facecolor='black')
         ax.set_facecolor('black')
@@ -278,14 +226,14 @@ class PillarnestHailoEvaluator:
         ax.set_xlim(-60, 60); ax.set_ylim(-60, 60); ax.axis('off')
         plt.savefig(f"{output_path_images}/frame_{idx:03d}.png", dpi=150, bbox_inches='tight')
         plt.close(fig)
-
+        
 if __name__ == "__main__":
     with open(PKL_INFOS, 'rb') as f:
         data = pickle.load(f)
-    infos = data['infos']
     infos = list(sorted(data['infos'], key=lambda e: e['timestamp']))
+    
     name = MODEL_PATH.split('/')[-1].replace('.hef', '')
-
+    
     # Nombres de archivos dinámicos según LIMIT_FRAMES
     if LIMIT_FRAMES is not None:
         output_filename = f"inference_output/{name}_partial_results_{LIMIT_FRAMES}_frames.pkl"
@@ -296,10 +244,10 @@ if __name__ == "__main__":
         csv_filename = f"inference_output/{name}_full_metrics.csv"
         print(f"\n✅ Ejecución de dataset completo.")
 
-    runner = PillarnestHailoEvaluator(MODEL_PATH, WEIGHTS_NUMPY)
+
+    runner = PointPillarsHailoEvaluator(MODEL_PATH, WEIGHTS_NUMPY)
     results = runner.run(infos, limit=LIMIT_FRAMES, csv_filename=csv_filename)
     
     with open(output_filename, 'wb') as f:
         pickle.dump(results, f)
-    
-    print(f"🚀 ¡Inferencia completada! Resultados en {output_filename}")
+    print(f"🚀 Inferencia PointPillars completada. Resultados en {output_filename}")

@@ -155,105 +155,92 @@ def _voxelize_numba_core(points, voxel_size, pcd_range, grid_size, max_num_point
             num_points_per_voxel[voxel_idx] += 1
             
     return voxels[:voxel_num], coors[:voxel_num], num_points_per_voxel[:voxel_num]
-# --- NÚCLEO EN C PARA EL ENCODER (Pillarnest PFN) ---
+# --- NÚCLEO EN C PARA EL ENCODER (PointPillars HardVFE) ---
 @numba.njit(fastmath=True, cache=True)
-def _pillarnest_pfn_numba_core(voxels, num_points, coors, P,
-                               vx, vy, x_offset, y_offset, z_offset,
-                               w, b, 
-                               use_cluster, use_voxel, use_dist, pool_mode):
+def _vfe_numba_core(voxels, num_points, coors, P,
+                    vx, vy, vz, x_offset, y_offset, z_offset, 
+                    w0, b0, w1, b1):
     M = voxels.shape[0]
-    out_channels = w.shape[0]
-    out_features = np.zeros((M, out_channels), dtype=np.float32)
-
-    # Pre-calculamos el valor de padding para los puntos vacíos del pilar
-    # (0 * W + b) pasado por ReLU
-    pad_val = np.zeros(out_channels, dtype=np.float32)
-    for k in range(out_channels):
-        if b[k] > 0.0:
-            pad_val[k] = b[k]
-
+    out_features = np.zeros((M, 64), dtype=np.float32)
+    
     for i in range(M):
         n_pts = num_points[i]
         if n_pts == 0:
             continue
-
-        # 1. Pre-cálculos del pilar
-        mean_x, mean_y, mean_z = 0.0, 0.0, 0.0
-        if use_cluster:
-            for j in range(n_pts):
-                mean_x += voxels[i, j, 0]
-                mean_y += voxels[i, j, 1]
-                mean_z += voxels[i, j, 2]
-            mean_x /= n_pts
-            mean_y /= n_pts
-            mean_z /= n_pts
-
-        c_x, c_y = 0.0, 0.0
-        if use_voxel:
-            c_x = coors[i, 2] * vx + x_offset
-            c_y = coors[i, 1] * vy + y_offset
-
-        # Buffers de pooling local
-        out_max = np.full(out_channels, -1e9, dtype=np.float32)
-        out_sum = np.zeros(out_channels, dtype=np.float32)
-
-        # 2. Iteración por punto real (Procesamiento al vuelo sin tensores intermedios)
-        for j in range(n_pts):
-            v_x = voxels[i, j, 0]
-            v_y = voxels[i, j, 1]
-            v_z = voxels[i, j, 2]
-            v_i = voxels[i, j, 3]
-            v_t = voxels[i, j, 4]
-
-            # Construcción dinámica de los canales en memoria L1 Cache
-            f = np.zeros(12, dtype=np.float32)
-            f[0] = v_x; f[1] = v_y; f[2] = v_z; f[3] = v_i; f[4] = v_t
-            idx = 5
             
-            if use_cluster:
-                f[idx] = v_x - mean_x; f[idx+1] = v_y - mean_y; f[idx+2] = v_z - mean_z
-                idx += 3
-            if use_voxel:
-                f[idx] = v_x - c_x; f[idx+1] = v_y - c_y; f[idx+2] = v_z - z_offset
-                idx += 3
-            if use_dist:
-                f[idx] = np.sqrt(v_x*v_x + v_y*v_y + v_z*v_z)
-                idx += 1
-
-            # Multiplicación Matricial Desenrollada + ReLU
-            for k in range(out_channels):
-                val = b[k]
-                for c in range(idx):
-                    val += f[c] * w[k, c]
+        # 1. Feature Decoration: Cluster Center
+        sum_x, sum_y, sum_z = 0.0, 0.0, 0.0
+        for j in range(n_pts):
+            sum_x += voxels[i, j, 0]
+            sum_y += voxels[i, j, 1]
+            sum_z += voxels[i, j, 2]
+        mean_x = sum_x / n_pts
+        mean_y = sum_y / n_pts
+        mean_z = sum_z / n_pts
+        
+        # 2. Feature Decoration: Voxel Center
+        c_z = coors[i, 0] * vz + z_offset
+        c_y = coors[i, 1] * vy + y_offset
+        c_x = coors[i, 2] * vx + x_offset
+        
+        # Buffers locales para la Capa 0
+        layer0_out = np.zeros((n_pts, 64), dtype=np.float32)
+        max_pool_0 = np.zeros(64, dtype=np.float32)
+        
+        # --- VFE LAYER 0 ---
+        for j in range(n_pts):
+            f0 = voxels[i, j, 0]
+            f1 = voxels[i, j, 1]
+            f2 = voxels[i, j, 2]
+            f3 = voxels[i, j, 3] # Intensity (4º canal, ignoramos el tiempo que es el 5º)
+            f4 = f0 - mean_x
+            f5 = f1 - mean_y
+            f6 = f2 - mean_z
+            f7 = f0 - c_x
+            f8 = f1 - c_y
+            f9 = f2 - c_z
+            
+            for k in range(64):
+                val = (f0*w0[k,0] + f1*w0[k,1] + f2*w0[k,2] + f3*w0[k,3] +
+                       f4*w0[k,4] + f5*w0[k,5] + f6*w0[k,6] + f7*w0[k,7] +
+                       f8*w0[k,8] + f9*w0[k,9] + b0[k])
                 
                 if val < 0.0:
                     val = 0.0 # ReLU
                 
-                # Acumulación de Pooling
-                if val > out_max[k]:
-                    out_max[k] = val
-                out_sum[k] += val
-
-        # 3. EMULACIÓN EXACTA DEL PADDING (Para Bit-Exactness)
-        empty_pts = P - n_pts
-        if empty_pts > 0:
-            for k in range(out_channels):
-                pv = pad_val[k]
-                if pv > out_max[k]:
-                    out_max[k] = pv
-                out_sum[k] += pv * empty_pts
-
-        # 4. Resolución del Pooling final
-        divisor = float(n_pts) if n_pts > 0 else 1.0 # np.maximum(num_points, 1.0)
+                layer0_out[j, k] = val
+                if val > max_pool_0[k]:
+                    max_pool_0[k] = val
+                    
+        # --- VFE LAYER 1 + POOLING FINAL ---
+        for j in range(n_pts):
+            for k in range(64):
+                val = b1[k]
+                # Características punto a punto de la capa 0
+                for c in range(64):
+                    val += layer0_out[j, c] * w1[k, c]
+                # Max pooling global de la capa 0 concatenado
+                for c in range(64):
+                    val += max_pool_0[c] * w1[k, c + 64]
+                    
+                if val < 0.0:
+                    val = 0.0 # ReLU
+                    
+                if val > out_features[i, k]:
+                    out_features[i, k] = val
         
-        for k in range(out_channels):
-            if pool_mode == 0:   # max
-                out_features[i, k] = out_max[k]
-            elif pool_mode == 1: # avg
-                out_features[i, k] = out_sum[k] / divisor
-            elif pool_mode == 2: # maxavg
-                out_features[i, k] = (out_max[k] + (out_sum[k] / divisor)) / 2.0
-
+        # --- EMULACIÓN EXACTA DEL PADDING (Para mantener el Bit-Exact) ---
+        # Si el pilar tiene menos puntos que el max_num_points (P), la implementación
+        # NumPy pasaba ceros a la Capa 1, resultando en max(b1, 0). 
+        # Hay que incluirlo en el Max Pooling final para no perder la precisión del modelo oficial.
+        if n_pts < P:
+            for k in range(64):
+                pad_val = b1[k]
+                if pad_val < 0.0:
+                    pad_val = 0.0
+                if pad_val > out_features[i, k]:
+                    out_features[i, k] = pad_val
+                    
     return out_features
 
 
@@ -276,6 +263,48 @@ class Voxelizer:
         grid_size = (self.pcd_range[3:] - self.pcd_range[:3]) / self.voxel_size
         self.grid_size = np.round(grid_size).astype(np.int64)
 
+    # # Versión oficial con bucle (lento en CPU)
+    # def voxelize(self, points):
+    #     # 1. Filtro de rango espacial
+    #     mask = ((points[:, 0] >= self.pcd_range[0]) & (points[:, 0] < self.pcd_range[3]) &
+    #             (points[:, 1] >= self.pcd_range[1]) & (points[:, 1] < self.pcd_range[4]) &
+    #             (points[:, 2] >= self.pcd_range[2]) & (points[:, 2] < self.pcd_range[5]))
+    #     points = points[mask]
+
+    #     if len(points) == 0:
+    #         return None
+
+    #     # 2. Coordenadas de Voxel (Z, Y, X)
+    #     voxel_coords = ((points[:, :3] - self.pcd_range[:3]) / self.voxel_size).astype(np.int32)
+    #     voxel_coords = voxel_coords[:, [2, 1, 0]] 
+
+    #     # 3. Hashing para agrupación rápida sin bucles
+    #     pilar_id = (voxel_coords[:, 0] * self.grid_size[1] * self.grid_size[0] +
+    #                 voxel_coords[:, 1] * self.grid_size[0] +
+    #                 voxel_coords[:, 2])
+
+    #     unique_ids, first_point_indices, inverse_indices = np.unique(
+    #         pilar_id, return_index=True, return_inverse=True
+    #     )
+
+    #     # 4. Limitación de Voxels (Consistencia con memoria del Hailo)
+    #     num_voxels = min(len(unique_ids), self.max_voxels)
+    #     keep_points_mask = inverse_indices < num_voxels
+    #     points = points[keep_points_mask]
+    #     inverse_indices = inverse_indices[keep_points_mask]
+
+    #     # 5. Llenado de tensores finales
+    #     voxels = np.zeros((num_voxels, self.max_num_points, points.shape[1]), dtype=np.float32)
+    #     coors = voxel_coords[first_point_indices[:num_voxels]]
+    #     num_points_per_voxel = np.zeros((num_voxels,), dtype=np.int32)
+
+    #     for i in range(num_voxels):
+    #         curr_points = points[inverse_indices == i]
+    #         n_pts = min(len(curr_points), self.max_num_points)
+    #         voxels[i, :n_pts, :] = curr_points[:n_pts]
+    #         num_points_per_voxel[i] = n_pts
+
+    #     return voxels, coors, num_points_per_voxel
 
     # Esta versión evita el bucle for de 30.000 iteraciones usando indexación avanzada (cambia por tanto el orden de los ptos dentro del pilar)
     def voxelize(self, points):
@@ -348,63 +377,118 @@ class Voxelizer:
             max_num_points=self.max_num_points,
             max_voxels=self.max_voxels
         )
-
-class PillarnestHeightEncoder:
+    
+class PointpillarsHardVFE:
     def __init__(self, 
-                 voxel_size, 
-                 point_cloud_range, 
-                 feat_channels=[48],
-                 with_cluster_center=True,
-                 with_voxel_center=True,
-                 with_distance=False,
-                 mode='maxavg'):
+                 voxel_size=[0.25, 0.25, 8],
+                 point_cloud_range=[-50, -50, -5, 50, 50, 3]):
         
         self.vx, self.vy, self.vz = voxel_size
         self.x_offset = self.vx / 2 + point_cloud_range[0]
         self.y_offset = self.vy / 2 + point_cloud_range[1]
         self.z_offset = self.vz / 2 + point_cloud_range[2]
         
-        self.with_cluster_center = with_cluster_center
-        self.with_voxel_center = with_voxel_center
-        self.with_distance = with_distance
-        
-        # Mapeo numérico para Numba
-        if mode == 'max': self.pool_mode = 0
-        elif mode == 'avg': self.pool_mode = 1
-        elif mode == 'maxavg': self.pool_mode = 2
-        else: self.pool_mode = 0
-        
-        self.w_fused = None
-        self.b_fused = None
+        self.w0 = None
+        self.b0 = None
+        self.w1 = None
+        self.b1 = None
 
     def set_weights(self, weights_dict):
-        """ Fusión Linear + BN y conversión a contiguos """
-        w = weights_dict['pfn_layers.0.linear.weight']
-        b = weights_dict.get('pfn_layers.0.linear.bias', np.zeros(w.shape[0], dtype=np.float32))
-        
-        mean = weights_dict['pfn_layers.0.norm.running_mean']
-        var = weights_dict['pfn_layers.0.norm.running_var']
-        gamma = weights_dict['pfn_layers.0.norm.weight']
-        beta = weights_dict['pfn_layers.0.norm.bias']
-        eps = 1e-3
+        """ Fusión Linear + BN idéntica a tu implementación NumPy """
+        fused = {}
+        for i in range(2):
+            prefix = f'pts_voxel_encoder.vfe_layers.{i}'
+            w = weights_dict[f'{prefix}.linear.weight']
+            b = weights_dict.get(f'{prefix}.linear.bias', np.zeros(w.shape[0], dtype=np.float32))
+            
+            gamma = weights_dict[f'{prefix}.norm.weight']
+            beta = weights_dict[f'{prefix}.norm.bias']
+            mean = weights_dict[f'{prefix}.norm.running_mean']
+            var = weights_dict[f'{prefix}.norm.running_var']
+            eps = 1e-3
 
-        scale = gamma / np.sqrt(var + eps)
-        
-        # Fundamental para Numba: ascontiguousarray
-        self.w_fused = np.ascontiguousarray(w * scale[:, None], dtype=np.float32)
-        self.b_fused = np.ascontiguousarray((b - mean) * scale + beta, dtype=np.float32)
+            scale = gamma / np.sqrt(var + eps)
+            fused[i] = {
+                'w': (w * scale[:, None]).astype(np.float32),
+                'b': ((b - mean) * scale + beta).astype(np.float32)
+            }
+            
+        # Numba requiere arrays contiguos para máxima velocidad, no soporta diccionarios
+        self.w0 = np.ascontiguousarray(fused[0]['w'])
+        self.b0 = np.ascontiguousarray(fused[0]['b'])
+        self.w1 = np.ascontiguousarray(fused[1]['w'])
+        self.b1 = np.ascontiguousarray(fused[1]['b'])
 
     def encode(self, voxels, num_points, coors):
-        # voxels: (M, P, 5)
+        # voxels: (M, P, 5) -> Pasamos la P (max_points) al core
         P = voxels.shape[1]
         
-        # Delegamos toda la ejecución al núcleo en C
-        return _pillarnest_pfn_numba_core(
+        return _vfe_numba_core(
             voxels, num_points, coors, P,
-            self.vx, self.vy, self.x_offset, self.y_offset, self.z_offset,
-            self.w_fused, self.b_fused,
-            self.with_cluster_center, self.with_voxel_center, self.with_distance, self.pool_mode
+            self.vx, self.vy, self.vz, 
+            self.x_offset, self.y_offset, self.z_offset,
+            self.w0, self.b0, self.w1, self.b1
         )
+
+
+# # Implementacion del scatter oficial con output NCHW (1, 48, 720, 720)
+# class Scatter:
+#     def __init__(self, 
+#                  output_shape=[720, 720], 
+#                  num_input_features=48):
+#         """
+#         Bloque Scatter: Convierte la lista dispersa de pilares en una imagen densa.
+#         Equivalente a: mmdet3d.models.middle_encoders.PointPillarsScatter
+#         """
+#         # output_shape suele ser [720, 720] en tu config
+#         self.ny = output_shape[0] # Alto (H)
+#         self.nx = output_shape[1] # Ancho (W)
+#         self.in_channels = num_input_features
+        
+#         # Buffer opcional para optimización futura
+#         self.canvas_buffer = None
+
+#     def scatter(self, voxel_features, coors):
+#         """
+#         Args:
+#             voxel_features: (M, 48) - Features calculados por el Encoder.
+#             coors: (M, 3) - Coordenadas [z, y, x] de cada pilar.
+            
+#         Returns:
+#             canvas: (48, 720, 720) - Imagen pseudo-lidar FP32.
+#         """
+#         # 1. Crear lienzo vacío (FP32)
+#         # Formato NCHW estándar de PyTorch: (Canales, Alto, Ancho)
+#         # Allocating ~99 MB cada frame (48 * 720 * 720 * 4 bytes)
+#         canvas = np.zeros((self.in_channels, self.ny, self.nx), dtype=np.float32)
+
+#         # 2. Extraer índices Y, X
+#         # En tu Voxelizer coors es [z, y, x].
+#         # coors[:, 1] es Y
+#         # coors[:, 2] es X
+#         y_idxs = coors[:, 1]
+#         x_idxs = coors[:, 2]
+
+#         # 3. Filtrado de Seguridad (Clip)
+#         # El código oficial asume que los índices están bien, pero en producción
+#         # es vital asegurar que no escribimos fuera del array.
+#         mask = (y_idxs >= 0) & (y_idxs < self.ny) & (x_idxs >= 0) & (x_idxs < self.nx)
+        
+#         # Si todos son válidos (lo normal), pasamos directo. Si no, filtramos.
+#         if not np.all(mask):
+#             voxel_features = voxel_features[mask]
+#             y_idxs = y_idxs[mask]
+#             x_idxs = x_idxs[mask]
+
+#         # 4. Operación Scatter (Fancy Indexing)
+#         # PyTorch hace: canvas_flat[indices] = voxels.t()
+#         # NumPy hace: canvas[:, y, x] = features.T
+        
+#         # voxel_features es (M, 48). Transponemos a (48, M) para encajar en el slice (C, ...)
+#         canvas[:, y_idxs, x_idxs] = voxel_features.T
+    
+#         return canvas
+
 
 # # Implementación del scatter con output NHWC (1, 720, 720, 48) HAILO-FRIENDLY 
 class Scatter:

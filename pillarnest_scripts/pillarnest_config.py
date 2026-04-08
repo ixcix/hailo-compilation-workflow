@@ -86,7 +86,7 @@ class PillarnestTinyConfig:
 
     # --- NMS (Non-Maximum Suppression) ---
     # Tipo de NMS: 'rotate' (más preciso, lento) o 'circle' (rápido por distancia)
-    nms_type = 'circle'
+    nms_type = 'rotate_aprox'
     
     # Umbral de solapamiento (IoU) para fusionar cajas (0.2 es típico en LiDAR)
     nms_thr = 0.2
@@ -188,7 +188,7 @@ class PillarnestSmallConfig:
 
     # --- NMS (Non-Maximum Suppression) ---
     # Tipo de NMS: 'rotate' (más preciso, lento) o 'circle' (rápido por distancia)
-    nms_type = 'rotate'
+    nms_type = 'rotate_aprox'
     
     # Umbral de solapamiento (IoU) para fusionar cajas (0.2 es típico en LiDAR)
     nms_thr = 0.2

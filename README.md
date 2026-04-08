@@ -81,7 +81,7 @@ FUERA DEL DOCKER:
 ``` bash
     # Configurar el puente físico entre discos
     ORIGEN="/home/inartrans2/Documents/INES_TFM/docker_oficial_hailo/shared_with_docker/disco2_puente"
-    DESTINO="/media/inartrans2/6c8f6887-9acf-4794-b990-8de964c59e872/INES/TFM/hailo_temp"
+    DESTINO="/media/inartrans2/6c8f6887-9acf-4794-b990-8de964c59e87/INES/TFM/hailo_temp"
 
     mkdir -p $DESTINO
     sudo mount --bind $DESTINO $ORIGEN
@@ -89,8 +89,8 @@ FUERA DEL DOCKER:
     echo "✅ Puente activado: $ORIGEN -> $DESTINO"
 ```
 ``` bash
-    # Definir las rutas
-    DATASET_REAL="/media/inartrans2/6c8f6887-9acf-4794-b990-8de964c59e872/INES/TFM/datasets/raw/nuscenes/v1.0-trainval"
+    # Definir las rutas  6c8f6887-9acf-4794-b990-8de964c59e87
+    DATASET_REAL="/media/inartrans2/6c8f6887-9acf-4794-b990-8de964c59e87/INES/TFM/datasets/raw/nuscenes/v1.0-trainval"
     PUNTO_ACCESO_DOCKER="/home/inartrans2/Documents/INES_TFM/docker_oficial_hailo/shared_with_docker/hailo-compilation-workflow/data/nuscenes/v1.0-trainval"
 
     # Crear la carpeta de destino si no existe
@@ -133,7 +133,11 @@ DENTRO DEL DOCKER:
         --calib /local/shared_with_docker/hailo-compilation-workflow/data/calib/calib_dataset_dens25.npy \
         --alls /local/shared_with_docker/hailo-compilation-workflow/model/hailo8l/pillarnest_original/optimization12.alls
     
-
+ python /local/shared_with_docker/hailo-compilation-workflow/pillarnest_scripts/3_quantization_clean.py \
+        --har /local/shared_with_docker/hailo-compilation-workflow/model/hailo8l/pillarnest_small/pillarnest_small.har \
+        --output /local/shared_with_docker/hailo-compilation-workflow/model/hailo8l/pillarnest_small/pillarnest_small_opt4.q.har \
+        --calib /local/shared_with_docker/hailo-compilation-workflow/data/calib/calib_dataset_dens25_128.npy \
+        --alls /local/shared_with_docker/hailo-compilation-workflow/model/hailo8l/pillarnest_small/opt4.alls
 
 export CUDA_VISIBLE_DEVICES=""
      python /local/shared_with_docker/hailo-compilation-workflow/pillarnest_scripts/3_quantization_pillarnest.py \

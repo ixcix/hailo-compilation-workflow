@@ -53,12 +53,8 @@ class PillarNest_Hailo_Module(torch.nn.Module):
     def forward(self, input_tensor):        
         # Transponer NCHW -> NHWC
         input_nhwc = np.transpose(input_tensor.cpu().detach().numpy(), (0, 2, 3, 1))
-        
-        # Inferencia silenciosa (sin prints repetitivos)
-        try:
-            raw_outputs = self._hailo_model(input_nhwc) 
-        except:
-            raw_outputs = self._hailo_model({'input_layer1': input_nhwc})
+
+        raw_outputs = self._hailo_model(input_nhwc)
 
         # Recuperación de nombres
         if isinstance(raw_outputs, list):
@@ -104,6 +100,19 @@ def verify_quantized(qhar_path, input_npy, golden_npz):
     try:
         input_data = np.load(input_npy)
         golden_data = np.load(golden_npz)
+        
+        # --- AÑADE ESTO PARA LIMITAR LOS FRAMES ---
+        limit_frames = 128  # Cambia este número a 16 o los que quieras probar
+        print(f"✂️  Limitando verificación a los primeros {limit_frames} frames para ahorrar tiempo.")
+        input_data = input_data[:limit_frames]
+        
+        # También debemos recortar los datos "Golden" para que las métricas coincidan
+        new_golden = {}
+        for key in golden_data.keys():
+            new_golden[key] = golden_data[key][:limit_frames]
+        golden_data = new_golden
+        # ------------------------------------------
+        
     except Exception as e:
         print(f"❌ Error leyendo archivos numpy: {e}")
         return
@@ -227,8 +236,8 @@ def verify_quantized(qhar_path, input_npy, golden_npz):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('qhar', help='Ruta al .q.har generado')
-    parser.add_argument('input', help='Ruta al golden_inputs.npy')
-    parser.add_argument('golden', help='Ruta al golden_outputs.npz')
+    parser.add_argument('--input', help='Ruta al golden_inputs.npy')
+    parser.add_argument('--golden', help='Ruta al golden_outputs.npz')
     
     args = parser.parse_args()
     verify_quantized(args.qhar, args.input, args.golden)

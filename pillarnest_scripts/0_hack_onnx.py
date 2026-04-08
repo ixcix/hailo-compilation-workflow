@@ -1,34 +1,44 @@
 import onnx
-# No HACE FALTAAAAAAAAAAAAAAAAAAA
+from onnx import helper
 
-# Cargar el modelo original
-working_dir = "model/hailo8l/pillarnest_tiny_def"
-model_path = f"{working_dir}/pillarnest_tiny_original_export.onnx"
-hacked_path = f"{working_dir}/pillarnest_hailo_fixed.onnx"
+def hack_onnx_for_hailo(input_path, output_path):
+    print(f"🕵️  Cargando modelo para cirugía: {input_path}")
+    model = onnx.load(input_path)
+    graph = model.graph
 
-print(f"Cargando modelo: {model_path}")
-model = onnx.load(model_path)
+    nodes_modified = 0
 
-modifications = 0
-for node in model.graph.node:
-    # Buscar solo los nodos ConvTranspose
-    if node.op_type == "ConvTranspose":
-        # Guardar todos los atributos que NO sean 'pads'
-        new_attrs = [a for a in node.attribute if a.name != 'pads']
-        
-        # Limpiar los atributos del nodo
-        del node.attribute[:]
-        
-        # Restaurar los atributos limpios
-        node.attribute.extend(new_attrs)
-        
-        # ¡LA MAGIA! Inyectar SAME_UPPER (que Hailo lee como SAME_TENSORFLOW)
-        auto_pad_attr = onnx.helper.make_attribute("auto_pad", b"SAME_UPPER")
-        node.attribute.append(auto_pad_attr)
-        
-        modifications += 1
+    for node in graph.node:
+        if node.op_type == "ConvTranspose":
+            print(f"  🔧 Procesando nodo: {node.name}")
+            
+            # 1. Filtrar atributos prohibidos (pads y output_padding)
+            # Si estos atributos existen, el compilador de Hailo ignora el auto_pad.
+            new_attributes = [
+                attr for attr in node.attribute 
+                if attr.name not in ['pads', 'output_padding', 'auto_pad']
+            ]
+            
+            # 2. Limpiar atributos actuales
+            node.ClearField('attribute')
+            
+            # 3. Reinyectar atributos limpios + el HACK de SAME_UPPER
+            node.attribute.extend(new_attributes)
+            
+            # Usamos SAME_UPPER que es el estándar ONNX para lo que Hailo llama SAME_TENSORFLOW
+            auto_pad_attr = helper.make_attribute("auto_pad", "SAME_TENSORFLOW")
+            node.attribute.append(auto_pad_attr)
+            
+            nodes_modified += 1
 
-# Guardar el nuevo modelo
-onnx.save(model, hacked_path)
-print(f"Éxito: Se modificaron {modifications} nodos ConvTranspose.")
-print(f"Modelo guardado como: {hacked_path}")
+    # 4. Guardar y verificar
+    onnx.save(model, output_path)
+    print(f"✅ Cirugía completada. {nodes_modified} nodos modificados.")
+    print(f"📦 Modelo listo para Hailo: {output_path}")
+
+if __name__ == "__main__":
+    # Cambia estos paths a los tuyos
+    hack_onnx_for_hailo(
+        "model/hailo8l/pillarnest_small/pillarnest_small_hailo_v2.onnx", 
+        "model/hailo8l/pillarnest_small/pillarnest_small_hailo_v2_hacked.onnx"
+    )

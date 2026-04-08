@@ -10,7 +10,7 @@ from hailo_sdk_client import ClientRunner
 os.environ['HAILO_SET_MEMORY_GROWTH'] = 'False'
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'False'
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 def deep_clean_system():
     """Limpia rastro de ejecuciones pasadas en RAM y Disco."""
@@ -64,9 +64,11 @@ def optimize_and_quantize(har_path, calib_path, output_qhar_path, alls_path):
     if not os.path.exists(calib_path):
         raise FileNotFoundError(f"[ERROR] No se encontró: {calib_path}")
     
-    print(f"📊 [INFO] Cargando calibración (mmap_mode='r')...")
+    # print(f"📊 [INFO] Cargando calibración (mmap_mode='r')...")
     # Usamos mmap y luego convertimos a float32 para asegurar compatibilidad
-    calib_set = np.load(calib_path, mmap_mode='r')
+    # calib_set = np.load(calib_path, mmap_mode='r')
+    print(f"📊 [INFO] Cargando calibración")
+    calib_set = np.load(calib_path)
     
     # CORRECCIÓN DE MEMORIA: Transponer consume mucha RAM. 
     # Lo hacemos en bloques si es necesario, pero aquí lo optimizamos:

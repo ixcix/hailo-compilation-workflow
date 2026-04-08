@@ -176,8 +176,8 @@ def verify_har(har_path, input_npy, golden_npz):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('har', required=True, help='Ruta al archivo .har (Pre-cuantización preferiblemente)')
-    parser.add_argument('--input', required=True, help='Ruta al golden_inputs.npy')
+    parser.add_argument('har', help='Ruta al archivo .har (Pre-cuantización preferiblemente)')
+    parser.add_argument('--input', required=True,  help='Ruta al golden_inputs.npy')
     parser.add_argument('--golden', required=True, help='Ruta al golden_outputs.npz')
     
     args = parser.parse_args()
